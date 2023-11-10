@@ -6,25 +6,45 @@ type TableName = String
 type ColumnName = String
 type RowValue = Any
 
+
+// Définition de la structure des données pour représenter les schéma d'une table
+// Schéma d'une table = crucial pour la définition de la structure des données stockées
+
+// Classe schéma : clé primaire key et une liste de déclarations de colonnes columns
 case class Schema(key: ColumnDeclaration, columns: List[ColumnDeclaration])
+// Classe de déclaration de colonnes : nom de colonne et son type
 case class ColumnDeclaration(name: ColumnName, colType: ColumnType)
 
+
+// Représentation des types de données possibles pour les colonnes :
+// utilisée pour spécifier le type de chaque colonne dans le schéma
 enum ColumnType(val name: String):
   case IntType extends ColumnType("INTEGER")
   case StringType extends ColumnType("STRING")
   case BooleanType extends ColumnType("BOOLEAN")
   case TimestampType extends ColumnType("TIMESTAMP")
 
+
+// Définition de l'objet ColumnType
 object ColumnType:
+  // byName crée une carte (Map) des noms de types de colonnes vers les types de colonnes
+  //correspondants, ce qui permet de rechercher rapidement un type de colonne par son nom
   val byName: Map[String, ColumnType] = ColumnType.values.map(t => (t.name, t)).toMap
+  // "from" prend un nom de type en entrée et renvoie le type de colonne correspondant
+  // s'il existe.
   def from(name: String): Option[ColumnType] = byName.get(name)
 
+// 1. Result
+// Utilisée pour représenter le résultat d'une requête
 case class Result(columns: List[ColumnName], rows: List[Row])
 
+// 2. Row
+// représente une ligne de données dans une table
 case class Row(data: Map[ColumnName, RowValue]) {
   def get(columnName: ColumnName): Option[RowValue] = data.get(columnName)
 }
 
+// Définition des erreurs possibles
 enum StoreError:
   case KeyNotFound(key: Key)
   case DuplicateKey(key: Key)
@@ -37,6 +57,10 @@ enum DatabaseError:
 
 case class Record(key: Key, value: Value)
 
+
+// Définition de l'interface Store
+// Définition de l'ensemble des méthodes que toute implémentation de stockage de données
+// doit fournir
 trait Store {
   def get(key: Key): Either[StoreError, Value]
   def put(key: Key, value: Value): Either[StoreError, Unit]
@@ -46,7 +70,9 @@ trait Store {
   def getPrefix(prefix: String): Either[StoreError, Iterator[Record]]
 }
 
+// Implémentation de base du KV-store en mémoire (idem que celle donnée)
 class MemoryStore extends Store {
+  // note: TreeMap est un type de Map où les données sont triées en fonction de la clé
   private var data: TreeMap[Key, Value] = TreeMap.empty
 
   override def get(key: Key): Either[StoreError, Value] =
@@ -77,17 +103,22 @@ class MemoryStore extends Store {
       .map { case (k, v) => Record(k, v) })
 }
 
+// Définition du plan d'exécution : permet de représenter le plan d'exécution complet de
+//la requête SQL de manière structurée.
 case class ExecutionPlan(firstOperation: Operation)
 
+// Interface d'opération : assure que toutes les opérations suivent une structure commune
 sealed trait Operation {
   val next: Option[Operation]
 }
 
+// Définition de l'interface Database
 trait Database {
   def openOrCreate(tableName: TableName, schema: Schema): Either[DatabaseError, Table]
   def drop(tableName: TableName): Either[DatabaseError, Unit]
 }
 
+// Définition de l'interface Table
 trait Table {
   def insert(values: Map[ColumnName, RowValue]): Either[DatabaseError, Unit]
   def execute(executionPlan: ExecutionPlan): Either[DatabaseError, Result]
@@ -105,9 +136,9 @@ sealed trait FilterExpression
 object FilterExpression {
   case class Equal(col1: ColumnExpression, col2: ColumnExpression) extends FilterExpression
   case class GreaterOrEqual(col1: ColumnExpression, col2: ColumnExpression) extends FilterExpression
-  // Add other cases as needed
 }
 
+// 1. Fonction gérant TableScan
 def handleTableScan(
                      tableName: String,
                      next: Option[Operation],
@@ -118,6 +149,7 @@ def handleTableScan(
   }
 }
 
+// 2. Fonction gérant requête Projection
 def handleProjection(
                       tableName: String,
                       column: ColumnExpression,
@@ -126,18 +158,14 @@ def handleProjection(
                       store: Store
                     ): Either[StoreError, Iterator[Record]] = {
   store.get(tableName).flatMap { _ =>
-    // Créer une liste de tous les noms de colonnes à projeter
     val columnsToFetch = column match {
       case ColumnExpression.Column(name) => name :: otherColumns.collect { case ColumnExpression.Column(name) => name }
       case _ => otherColumns.collect { case ColumnExpression.Column(name) => name }
     }
 
-    // Filtrer les records pour obtenir seulement ceux qui ont la clé correspondant à la colonne requise
     store.scan().map { recordsIterator =>
       recordsIterator.map { record =>
-        // Diviser la clé pour obtenir le nom de la colonne et l'identifiant
         val keyParts = record.key.split("#")
-        // Si la clé correspond à une des colonnes à projeter, on prend sa valeur
         if (columnsToFetch.contains(keyParts.last)) {
           Record(record.key, record.value)
         } else {
@@ -148,7 +176,9 @@ def handleProjection(
   }
 }
 
-
+// 3. Requête Filter
+// 3.1 Fonctions avant de gérer la requête Filter
+// 3.1.1 Fonction qui gère les expressions de filtre telles que '=' ou '<='
 def evaluateFilter(filter: FilterExpression, record: Record): Boolean = {
   filter match {
     case FilterExpression.Equal(col1, col2) =>
@@ -161,13 +191,11 @@ def evaluateFilter(filter: FilterExpression, record: Record): Boolean = {
       val value2 = evaluateColumnExpression(col2, record).toString.toIntOption.getOrElse(0)
       value1 >= value2
 
-    // Add other cases as needed
-    case _ => true // Default to accepting all records
+    case _ => true
   }
 }
 
-
-
+//3.1.2 Fonction qui gère les expressions de colonnes pour savoir où chercher la data
 def evaluateColumnExpression(colExpr: ColumnExpression, record: Record): RowValue = {
   colExpr match {
     case ColumnExpression.Column(name) =>
@@ -175,10 +203,11 @@ def evaluateColumnExpression(colExpr: ColumnExpression, record: Record): RowValu
 
     case ColumnExpression.LitInt(value) => value
     case ColumnExpression.LitString(value) => value
-    case _ => "" // Handle other cases
+    case _ => ""
   }
 }
 
+// 3.2 Fonction de filtre => gestion de la requête Filter
 def handleFilter(
                   filters: List[FilterExpression],
                   next: Option[Operation],
@@ -192,6 +221,7 @@ def handleFilter(
   }
 }
 
+//4. Fonction gérant la requête Range
 def handleRange(
                  tableName: String,
                  start: Int,
@@ -233,12 +263,21 @@ case class Range(
                 ) extends Operation
 
 
+
+// Classe QueryEngine => encapsulation du moteur de requête
+// Paramètre : Store => interaction avec les données
 class QueryEngine(store: Store) {
+  // Méthode d'exécution d'une requête en fonction du plan d'exécution
   def executeQuery(executionPlan: ExecutionPlan): Either[StoreError, Iterator[Record]] = {
     executeOperation(executionPlan.firstOperation)
   }
 
+  // Méthode d'exécution des opération
+  // Prend une opération en argument et exécute l'opération en appelant
+  // la fonction appropriée en fonction du type d'opération.
   private def executeOperation(operation: Operation): Either[StoreError, Iterator[Record]] = {
+    // Définition de toutes les opérations possibles
+    // On fait interragir les différentes fonctions ditrectement avec Store
     operation match {
       case TableScan(tableName, next) =>
         handleTableScan(tableName, next, store)
@@ -284,6 +323,7 @@ object Main {
     result match {
       case Left(error) => println(s"Erreur lors de l'exécution de la requête : $error")
       case Right(records) =>
+        // Parcourez les enregistrements pour obtenir le résultat
         val filteredRecords = records.filter(record => record.key == "123#name")
         filteredRecords.foreach { record =>
           println(s"Clé: ${record.key}, Valeur: ${record.value}")
